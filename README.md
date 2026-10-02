@@ -24,7 +24,7 @@ python -m venv .venv
 pip install -r requirements.txt
 
 python src/01_limpieza.py     # data/raw  → 6 tablas en data/processed
-python src/02_calculos.py     # data/processed → 7 tablas de resultados
+python src/02_calculos.py     # data/processed → 8 tablas de resultados
 python app/app.py             # dashboard en http://127.0.0.1:8050
 ```
 
@@ -59,14 +59,15 @@ Fuente: BCRD → Estadísticas → Precios → "IPC base anual: octubre 2019 - s
 | `peso_efectivo` | Peso real de cada nodo en la canasta, mes a mes |
 | `subyacencia_tiempo` | IPC general vs subyacente |
 | `subyacencia_peso` | Porción subyacente del peso de cada nodo |
-| `simulacion_percapita` | Valor del per cápita si se indexara con cada índice |
+| `simulacion_percapita` | Las dos indexaciones del per cápita (2022 y 2025) vs lo que habría dado el IPC general, el IPC salud, su promedio y salud ampliada, en % y RD$ |
+| `historia_percapita` | Los aumentos del per cápita (oct 2021 – nov 2025) y de qué tipo fue cada uno: indexación o coberturas nuevas |
 
 ## Notas metodológicas
 
 - **Fórmulas.** Mensual = índice ÷ índice del mes anterior − 1. Interanual = índice ÷ índice de 12 meses atrás − 1. Acumulada = índice ÷ índice de dic 2020 − 1. Peso efectivo = peso base × índice del nodo ÷ índice general. Incidencia = peso efectivo del mes anterior × inflación del nodo.
-- **Control.** Las incidencias de los 12 grupos suman la inflación general (diferencia máxima 0.0008 puntos porcentuales).
+- **Controles.** Las incidencias de los 12 grupos suman la inflación general (diferencia máxima 0.0008 puntos porcentuales); el peso no subyacente de la canasta da 30.19%, igual que el BCRD; y las variaciones de la simulación del per cápita reproducen las cifras de referencia (±0.01 pp). `02_calculos.py` falla si alguno no se cumple.
 - **Artículos desde oct 2020.** El BCRD publica los artículos solo desde octubre 2020; por eso la inflación interanual por subgrupo, clase, subclase o artículo existe desde octubre 2021. Antes se usa la variación acumulada desde dic 2020.
 - **Seguro de salud.** El seguro de salud (artículo 1253101, peso 0.35%) está en el grupo 12, Bienes y Servicios Diversos, y no en el grupo Salud. El análisis lo muestra aparte ("salud ampliada").
 - **Serie del IPC general.** La serie oficial está empalmada con base 2010; la serie referencial con la canasta nueva difiere hasta 0.88 puntos antes de sep 2020.
 - **Periodo.** El BCRD publica datos hasta ago 2026; el análisis se recorta a mar 2026.
-- **Supuesto del per cápita.** La simulación parte de RD$1,327.81 en dic 2020 (constante `PERCAPITA_BASE_FECHA` en `src/02_calculos.py`); la fecha exacta de vigencia de ese monto está por confirmar.
+- **Per cápita.** Solo 2 de los 5 montos del per cápita (2022 y 2025) son indexación por precios; los demás agregaron coberturas o honorarios. Por eso la simulación compara únicamente los montos de indexación (RD$102.71 y RD$204.32) contra lo que habría dado cada índice en el mismo período (mar 2021 → mar 2022 con base RD$1,327.81; mar 2023 → mar 2025 con base RD$1,683.22), no contra el per cápita total.

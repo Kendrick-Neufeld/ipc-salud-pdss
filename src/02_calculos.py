@@ -13,7 +13,8 @@ Tablas que produce (en data/processed):
     incidencias          cuántos puntos aporta cada nodo a la inflación general
     peso_efectivo        peso real de cada nodo en la canasta mes a mes
     subyacencia          IPC general vs subyacente, y peso subyacente por nodo
-    simulacion_percapita cuánto valdría el per cápita indexado con cada índice
+    simulacion_percapita las 2 indexaciones (2022 y 2025) vs lo que habría dado cada índice, en % y RD$
+    historia_percapita   los aumentos del per cápita y de qué tipo fue cada uno
 
 Ideas clave:
   - Inflación mensual      = índice_t / índice_(t-1) - 1
@@ -37,16 +38,38 @@ BASE_ACUM = pd.Timestamp("2020-12-01")  # mes base de la variación acumulada
 SALUD = "06"
 SEGURO_SALUD = "1253101"  # vive en el grupo 12, pero es salud de verdad
 
+# --- Peso no subyacente que publica el BCRD (control de subyacencia) --------
+PESO_NO_SUBYACENTE_BCRD = 30.19
+
 # --- Per cápita PDSS régimen contributivo (CNSS/SISALRIL) ------------------
-# SUPUESTO A CONFIRMAR: el CLAUDE.md no dice desde qué mes rige RD$1,327.81.
-# Aquí se toma dic 2020 como punto de partida de la simulación. Si es otra
-# fecha, cambia PERCAPITA_BASE_FECHA y vuelve a correr el script.
-PERCAPITA_BASE_FECHA = pd.Timestamp("2020-12-01")
-PERCAPITA_BASE = 1327.81
-PERCAPITA_REAL = {   # valores aprobados con fecha conocida
-    pd.Timestamp("2023-02-01"): 1555.14,
-    pd.Timestamp("2023-11-01"): 1683.22,
-    pd.Timestamp("2025-10-01"): 1887.54,
+# Historia de los aumentos. Cada aumento se separa en lo que fue indexación por
+# precios y lo que fueron coberturas/honorarios nuevos (no es inflación).
+PERCAPITA_HISTORIA = [
+    # vigencia, texto, per cápita, indexación RD$, coberturas/honorarios RD$, tipo, fuente, nota
+    ("2021-10-01", "oct 2021", 1327.81, 0.00, 0.00, "Monto base", "Res. CNSS 533-01 (8 oct 2021)",
+     "Punto de partida de la historia"),
+    ("2022-08-01", "ago 2022 (retroactivo)", 1490.14, 102.71, 59.62, "Indexación + coberturas nuevas",
+     "Res. CNSS 553", "Indexación según inflación mar 2021–mar 2022"),
+    ("2023-02-01", "feb 2023", 1555.14, 0.00, 65.00, "Coberturas y honorarios",
+     "Res. CNSS 563-01 (26 ene 2023)", "Honorarios, exámenes, habitación (no es indexación general)"),
+    ("2023-11-01", "nov 2023", 1683.22, 0.00, 128.08, "Cobertura nueva",
+     "Res. CNSS 2023", "Cobertura de medicamentos ambulatorios"),
+    ("2025-11-01", "nov 2025", 1887.54, 204.32, 0.00, "Indexación",
+     "Res. CNSS 624-02 (31 oct 2025)", "Indexación abr 2023–mar 2025; honorarios por aparte (+44.71)"),
+]
+
+# Solo 2 de los 5 hitos son indexación por precios. La simulación compara SOLO
+# esos montos de indexación contra lo que habría dado cada índice en el mismo período.
+INDEXACIONES = [
+    {"anio": 2022, "base": 1327.81, "desde": pd.Timestamp("2021-03-01"),
+     "hasta": pd.Timestamp("2022-03-01"), "aprobado_rd": 102.71},
+    {"anio": 2025, "base": 1683.22, "desde": pd.Timestamp("2023-03-01"),
+     "hasta": pd.Timestamp("2025-03-01"), "aprobado_rd": 204.32},
+]
+# Control: cifras de referencia (del CLAUDE.md) que la simulación debe reproducir, en %
+REFERENCIA_PCT = {
+    (2022, "IPC general"): 9.05, (2022, "IPC salud"): 4.78, (2022, "Promedio general y salud"): 6.92,
+    (2025, "IPC general"): 7.09, (2025, "IPC salud"): 10.13, (2025, "Promedio general y salud"): 8.61,
 }
 
 
@@ -166,7 +189,7 @@ def subyacencia(general, subyacente, catalogo):
     padre = catalogo.set_index("codigo")["padre"]
     filas = []
     for art in catalogo[catalogo["nivel"] == "articulo"].itertuples():
-        es_sub = art.subyacente is True
+        es_sub = bool(art.subyacente)
         nodo = art.codigo
         while isinstance(nodo, str):  # sube por padre hasta llegar al grupo
             filas.append((nodo, art.ponderacion, art.ponderacion if es_sub else 0.0))
@@ -175,29 +198,65 @@ def subyacencia(general, subyacente, catalogo):
            .groupby("codigo").sum().reset_index())
     p["pct_subyacente"] = p["peso_subyacente"] / p["peso_total"] * 100
     p = catalogo[["codigo", "nombre", "nivel", "grupo"]].merge(p, on="codigo", how="inner")
+
+    # control: el peso NO subyacente de toda la canasta debe ser el que publica el BCRD
+    grupos = p[p["nivel"] == "grupo"]
+    no_sub = (grupos["peso_total"] - grupos["peso_subyacente"]).sum()
+    assert round(no_sub, 2) == PESO_NO_SUBYACENTE_BCRD, (
+        f"peso no subyacente = {no_sub:.4f}%, el BCRD publica {PESO_NO_SUBYACENTE_BCRD}%")
+    print(f"  control subyacencia: peso no subyacente = {no_sub:.2f}% (BCRD: {PESO_NO_SUBYACENTE_BCRD}%)")
     return t, p
 
 
 # ---------------------------------------------------------- simulación per cápita
-def simular_percapita(comparacion_larga):
-    """¿Cuánto valdría el per cápita si se hubiera indexado con cada índice?
-    valor_t = PERCAPITA_BASE * índice_t / índice_(fecha base)"""
-    ind = comparacion_larga.set_index("fecha")
-    i0 = PERCAPITA_BASE_FECHA
-    esquemas = {"IPC general": "indice_general", "IPC salud": "indice_salud",
-                "IPC salud ampliada": "indice_salud_ampliada",
-                "Servicios médicos": "indice_servicios_medicos",
-                "Productos farmacéuticos": "indice_farmaceuticos",
-                "Servicios de hospital": "indice_hospital"}
+def historia_percapita():
+    """Tabla de los aumentos del per cápita, con el tipo de cada aumento."""
+    h = pd.DataFrame(PERCAPITA_HISTORIA, columns=[
+        "vigencia", "vigencia_texto", "per_capita", "monto_indexacion", "monto_coberturas",
+        "tipo", "fuente", "nota"])
+    h["vigencia"] = pd.to_datetime(h["vigencia"])
+    h["cambio_rd"] = h["per_capita"].diff().round(2)
+    h["cambio_pct"] = (h["per_capita"].pct_change() * 100).round(2)
+    h["es_indexacion"] = h["monto_indexacion"] > 0
+    # control: cada aumento debe ser igual a la suma de sus partes
+    partes = (h["monto_indexacion"] + h["monto_coberturas"])[1:]
+    assert ((h["cambio_rd"][1:] - partes).abs() < 0.005).all(), "los montos de la historia no cuadran"
+    return h
+
+
+def simular_percapita(comparacion):
+    """Para cada indexación (2022 y 2025): ¿cuánto habría subido el per cápita
+    si se hubiera usado cada índice en el mismo período?
+        variación % = índice_hasta / índice_desde - 1
+        monto RD$   = base * variación %
+    'Promedio general y salud' es el promedio simple de las dos variaciones %
+    (así se describe la indexación de 2022). Todo se compara con lo aprobado."""
+    ind = comparacion.set_index("fecha")
+    indices = {"IPC general": "indice_general", "IPC salud": "indice_salud",
+               "Salud ampliada (con seguro)": "indice_salud_ampliada"}
     filas = []
-    for nombre, col in esquemas.items():
-        s = ind[col]
-        valor = PERCAPITA_BASE * s / s.loc[i0]
-        for f, v in valor[valor.index >= i0].items():
-            filas.append((f, nombre, v))
-    out = pd.DataFrame(filas, columns=["fecha", "esquema", "per_capita"])
-    real = pd.Series(PERCAPITA_REAL, name="per_capita_aprobado")
-    out = out.merge(real, left_on="fecha", right_index=True, how="left")
+    for ix in INDEXACIONES:
+        base, d, h = ix["base"], ix["desde"], ix["hasta"]
+        variaciones = {nom: (ind.loc[h, col] / ind.loc[d, col] - 1) * 100
+                       for nom, col in indices.items()}
+        variaciones["Promedio general y salud"] = (
+            variaciones["IPC general"] + variaciones["IPC salud"]) / 2
+        aprobado_pct = ix["aprobado_rd"] / base * 100
+        resultados = [("Aprobado CNSS", aprobado_pct)] + list(variaciones.items())
+        for nom, pct in resultados:
+            monto = base * pct / 100
+            filas.append({
+                "anio": ix["anio"], "periodo_desde": d, "periodo_hasta": h, "base_rd": base,
+                "esquema": nom, "variacion_pct": pct, "monto_rd": monto,
+                "aprobado_pct": aprobado_pct, "aprobado_rd": ix["aprobado_rd"],
+                "dif_pct": pct - aprobado_pct, "dif_rd": monto - ix["aprobado_rd"]})
+    out = pd.DataFrame(filas)
+
+    # control: las cifras de referencia del CLAUDE.md deben salir de los datos
+    for (anio, nom), esperado in REFERENCIA_PCT.items():
+        real = out[(out["anio"] == anio) & (out["esquema"] == nom)]["variacion_pct"].iloc[0]
+        assert abs(real - esperado) < 0.01, f"{anio} {nom}: salió {real:.2f}%, se esperaba {esperado}%"
+    print("  control per cápita: las 6 variaciones de referencia coinciden (±0.01 pp)")
     return out
 
 
@@ -215,9 +274,8 @@ def main():
     efectivo, incidencias = peso_e_incidencias(inflacion, articulos, catalogo)
     comparacion = comparar_salud(series)
     sub_tiempo, sub_peso = subyacencia(general, subyacente, catalogo)
-    # la simulación necesita desde dic 2020, así que usa la serie sin recortar
-    comp_larga = comparar_salud(series, desde=BASE_ACUM)
-    percapita = simular_percapita(comp_larga)
+    percapita = simular_percapita(comparacion)
+    historia = historia_percapita()
 
     print("Guardando en data/processed...")
     guardar(inflacion, "inflacion_nodos")
@@ -227,6 +285,7 @@ def main():
     guardar(sub_tiempo, "subyacencia_tiempo")
     guardar(sub_peso, "subyacencia_peso")
     guardar(percapita, "simulacion_percapita")
+    guardar(historia, "historia_percapita")
 
 
 if __name__ == "__main__":

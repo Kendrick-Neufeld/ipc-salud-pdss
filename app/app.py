@@ -25,6 +25,12 @@ pef = pd.read_parquet(PROC / "peso_efectivo.parquet")
 sub_t = pd.read_parquet(PROC / "subyacencia_tiempo.parquet")
 sub_p = pd.read_parquet(PROC / "subyacencia_peso.parquet")
 sim = pd.read_parquet(PROC / "simulacion_percapita.parquet")
+hist = pd.read_parquet(PROC / "historia_percapita.parquet")
+# una fila por indexación (2022 y 2025), para los títulos de la pestaña Per cápita
+_periodos = sim.drop_duplicates("anio").set_index("anio")
+INDEX_2022, INDEX_2025 = [
+    {"anio": a, "base": _periodos.loc[a, "base_rd"], "desde": _periodos.loc[a, "periodo_desde"],
+     "hasta": _periodos.loc[a, "periodo_hasta"]} for a in (2022, 2025)]
 
 NOMBRE = cat.set_index("codigo")["nombre"].to_dict()
 FECHA_FIN = comp["fecha"].max()
@@ -425,61 +431,145 @@ tab_subyacencia = html.Div([
 ])
 
 # ===================================================================== TAB 5
-ESQUEMAS = [("IPC general", GRIS), ("IPC salud", AZUL), ("IPC salud ampliada", NARANJA),
-            ("Servicios médicos", AQUA), ("Productos farmacéuticos", "#eda100"),
-            ("Servicios de hospital", "#4a3aa7")]
-COLOR_ESQUEMA = dict(ESQUEMAS)
-PC_BASE = sim.loc[sim["fecha"] == sim["fecha"].min(), "per_capita"].iloc[0]
-PC_FECHA = sim["fecha"].min()
+COLOR_ESQUEMA = {"Aprobado CNSS": TINTA, "IPC general": GRIS, "IPC salud": AZUL,
+                 "Promedio general y salud": AQUA, "Salud ampliada (con seguro)": NARANJA}
+
+
+def rd(x, signo=False):
+    return f"{x:+,.2f}" if signo else f"{x:,.2f}"
+
+
+def fig_historia():
+    """Cada aumento del per cápita, partido en indexación por precios y coberturas nuevas."""
+    h = hist.iloc[1:]  # el primer renglón es el monto base, no un aumento
+    fig = figura(titulo_y="Aumento (RD$)")
+    fig.update_layout(barmode="stack", bargap=0.35, hovermode="closest",
+                      xaxis=dict(type="category", tickformat=None, hoverformat=None, linecolor=GRIS_CLARO))
+    for nom, col, color in [("Indexación por precios", "monto_indexacion", AZUL),
+                            ("Coberturas y honorarios nuevos", "monto_coberturas", GRIS_CLARO)]:
+        y = h[col].where(h[col] > 0)
+        fig.add_trace(go.Bar(x=h["vigencia_texto"], y=y, name=nom, marker_color=color,
+                             marker_line=dict(color="white", width=2),
+                             text=[f"{v:,.2f}" if pd.notna(v) else "" for v in y], textposition="inside",
+                             textfont=dict(color="white" if color == AZUL else TINTA, size=12),
+                             hovertemplate="%{x}<br>RD$ %{y:,.2f}<extra>" + nom + "</extra>"))
+    return fig
+
+
+def tabla_historia():
+    filas = []
+    for r in hist.itertuples():
+        filas.append({"Vigencia": r.vigencia_texto, "Per cápita (RD$)": rd(r.per_capita),
+                      "Aumento (RD$)": "—" if pd.isna(r.cambio_rd) else rd(r.cambio_rd, True),
+                      "Por indexación": "—" if r.monto_indexacion == 0 else rd(r.monto_indexacion),
+                      "Por coberturas": "—" if r.monto_coberturas == 0 else rd(r.monto_coberturas),
+                      "Tipo": r.tipo, "Fuente": r.fuente})
+    return dash_table.DataTable(
+        data=filas, columns=[{"name": c, "id": c} for c in filas[0]],
+        style_header={"fontWeight": "600", "backgroundColor": "#f4f3f0"},
+        style_cell={"fontFamily": "inherit", "padding": "6px 10px", "textAlign": "right", "fontSize": 13,
+                    "whiteSpace": "normal", "height": "auto"},
+        style_cell_conditional=[{"if": {"column_id": c}, "textAlign": "left"}
+                                for c in ("Vigencia", "Tipo", "Fuente")],
+        style_data_conditional=[{"if": {"filter_query": '{Tipo} contains "Indexación"'},
+                                 "backgroundColor": "#eef4fc"}])
+
+
+def tabla_comparacion():
+    filas = []
+    for r in sim.itertuples():
+        es_ap = r.esquema == "Aprobado CNSS"
+        filas.append({"Año": r.anio, "Período": f"{etiqueta_mes(r.periodo_desde)} → {etiqueta_mes(r.periodo_hasta)}",
+                      "Base (RD$)": rd(r.base_rd), "Índice": r.esquema,
+                      "Variación (%)": f"{r.variacion_pct:.2f}", "Monto (RD$)": rd(r.monto_rd),
+                      "Dif. vs aprobado (pp)": "—" if es_ap else f"{r.dif_pct:+.2f}",
+                      "Dif. vs aprobado (RD$)": "—" if es_ap else rd(r.dif_rd, True)})
+    return dash_table.DataTable(
+        data=filas, columns=[{"name": c, "id": c} for c in filas[0]],
+        style_header={"fontWeight": "600", "backgroundColor": "#f4f3f0"},
+        style_cell={"fontFamily": "inherit", "padding": "6px 10px", "textAlign": "right", "fontSize": 13},
+        style_cell_conditional=[{"if": {"column_id": c}, "textAlign": "left"} for c in ("Período", "Índice")],
+        style_data_conditional=[{"if": {"filter_query": '{Índice} = "Aprobado CNSS"'},
+                                 "fontWeight": "600", "backgroundColor": "#f4f3f0"}])
+
+
+def hallazgos_percapita():
+    """Frases calculadas con los datos (no escritas a mano), una por indexación."""
+    items = []
+    for anio in sorted(sim["anio"].unique()):
+        d = sim[sim["anio"] == anio].set_index("esquema")
+        ap, g, s = (d.loc[k, "variacion_pct"] for k in ("Aprobado CNSS", "IPC general", "IPC salud"))
+        dp = d.loc["Promedio general y salud", "dif_pct"]  # promedio menos aprobado
+        if ap > max(g, s):
+            posicion = "superó a ambos índices"
+        elif ap < min(g, s):
+            posicion = "quedó por debajo de ambos índices"
+        else:
+            posicion = "quedó entre el IPC salud y el IPC general"
+        items.append(html.Li(
+            f"{anio}: el aumento por indexación fue {ap:.2f}% (RD${d.loc['Aprobado CNSS', 'monto_rd']:,.2f}) y "
+            f"{posicion} (general {g:.2f}%, salud {s:.2f}%). Frente al promedio de ambos "
+            f"({d.loc['Promedio general y salud', 'variacion_pct']:.2f}%) quedó {abs(dp):.2f} pp "
+            f"{'por encima' if dp < 0 else 'por debajo'}."))
+    return html.Ul(items)
+
+
+def fig_comparacion(anio: int, unidad: str):
+    d = sim[sim["anio"] == anio]
+    col, fmt = ("variacion_pct", "{:.2f}%") if unidad == "pct" else ("monto_rd", "RD$ {:,.2f}")
+    d = d.sort_values(col)
+    fig = figura(alto=330, leyenda=False)
+    fig.update_layout(hovermode="closest", margin=dict(l=200, r=70, t=16, b=40),
+                      xaxis=dict(title="Variación (%)" if unidad == "pct" else "Monto (RD$)",
+                                 gridcolor=REJILLA, tickformat=None, hoverformat=None,
+                                 range=[0, d[col].max() * 1.25]),
+                      yaxis=dict(automargin=True, gridcolor="white"))
+    fig.add_trace(go.Bar(
+        x=d[col], y=d["esquema"], orientation="h", marker_color=[COLOR_ESQUEMA[e] for e in d["esquema"]],
+        marker_line=dict(color="white", width=2), text=[fmt.format(v) for v in d[col]],
+        textposition="outside", textfont=dict(color=TINTA, size=12), cliponaxis=False,
+        customdata=d[["variacion_pct", "monto_rd", "dif_rd"]],
+        hovertemplate="<b>%{y}</b><br>%{customdata[0]:.2f}%<br>RD$ %{customdata[1]:,.2f}"
+                      "<br>dif. vs aprobado RD$ %{customdata[2]:+,.2f}<extra></extra>"))
+    return fig
+
+
+def titulo_periodo(ix):
+    return (f"Indexación {ix['anio']}: {etiqueta_mes(ix['desde'])} → {etiqueta_mes(ix['hasta'])} "
+            f"(base RD${ix['base']:,.2f})")
+
 
 tab_percapita = html.Div([
-    html.Div(className="aviso", children=[
-        html.Strong("Supuesto de la simulación: "),
-        f"se parte del per cápita de RD${PC_BASE:,.2f} en {etiqueta_mes(PC_FECHA)} y se indexa con cada índice. "
-        "Falta confirmar desde qué mes rige ese monto (se asume dic 2020, ver CLAUDE.md)."]),
+    html.P("De los cinco montos del per cápita, solo dos aumentos fueron indexación por precios (2022 y 2025). "
+           "Los demás agregaron coberturas o honorarios. Por eso la comparación con los índices se hace "
+           "únicamente sobre los montos de indexación, no sobre el per cápita total.", className="nota"),
+    tarjeta("Historia del per cápita (régimen contributivo)",
+            "Cada aumento partido en indexación por precios y coberturas o honorarios nuevos. "
+            "Filas en azul: aumentos con indexación.",
+            html.Div([dcc.Graph(figure=fig_historia(), config=CONFIG), tabla_historia()])),
     html.Div(className="controls one", children=[html.Div([
-        html.Label("Índices con los que indexar"),
-        dcc.Checklist(id="c-esquemas", className="check",
-                      value=["IPC general", "IPC salud", "IPC salud ampliada", "Servicios médicos"],
-                      options=[{"label": " " + n, "value": n} for n, _ in ESQUEMAS],
-                      inline=True)])]),
-    tarjeta("¿Cuánto valdría el per cápita (RD$)?",
-            "Cada línea indexa el per cápita base con un índice distinto. Los rombos son los montos aprobados por el CNSS.",
-            grafico("c-grafico")),
-    tarjeta("Aprobado vs simulado en las fechas conocidas",
-            "Diferencia = monto aprobado menos simulado. Positivo: lo aprobado quedó por encima de ese índice.",
-            dash_table.DataTable(id="c-tabla", style_header={"fontWeight": "600", "backgroundColor": "#f4f3f0"},
-                                 style_cell={"fontFamily": "inherit", "padding": "6px 10px",
-                                             "textAlign": "right", "fontSize": 13})),
+        html.Label("Mostrar la comparación en"),
+        dcc.RadioItems(id="c-unidad", value="pct", className="check", inline=True,
+                       options=[{"label": " Porcentaje (%)", "value": "pct"},
+                                {"label": " Pesos (RD$)", "value": "rd"}])])]),
+    html.Div(className="grid-2", children=[
+        tarjeta(titulo_periodo(INDEX_2022), "¿Qué habría dado cada índice en el mismo período?",
+                grafico("c-2022")),
+        tarjeta(titulo_periodo(INDEX_2025), "¿Qué habría dado cada índice en el mismo período?",
+                grafico("c-2025")),
+    ]),
+    tarjeta("Qué muestra la comparación",
+            "El promedio es el simple de las variaciones del IPC general y del IPC salud.",
+            hallazgos_percapita()),
+    tarjeta("Detalle de la comparación", "Diferencia = índice menos aprobado. Negativo: ese índice habría dado menos que lo aprobado.",
+            tabla_comparacion()),
 ])
 
 
 def registrar_callbacks_percapita(app):
-    @app.callback(Output("c-grafico", "figure"), Output("c-tabla", "data"), Output("c-tabla", "columns"),
-                  Input("c-esquemas", "value"))
-    def percapita(esquemas):
-        esquemas = [e for e, _ in ESQUEMAS if e in (esquemas or [])]
-        fig = figura(titulo_y="RD$ por afiliado al mes")
-        for e in esquemas:
-            d = sim[sim["esquema"] == e]
-            linea(fig, d["fecha"], d["per_capita"], e, COLOR_ESQUEMA[e])
-        ap = sim.dropna(subset=["per_capita_aprobado"]).drop_duplicates("fecha")
-        fig.add_trace(go.Scatter(x=ap["fecha"], y=ap["per_capita_aprobado"], name="Aprobado CNSS",
-                                 mode="markers", marker=dict(symbol="diamond", size=11, color=TINTA,
-                                                             line=dict(color="white", width=2)),
-                                 hovertemplate="%{y:,.2f}"))
-        fig.update_yaxes(tickformat=",.0f")
-
-        ancho = sim.pivot(index="fecha", columns="esquema", values="per_capita")
-        filas = []
-        for _, r in ap.iterrows():
-            fila = {"Fecha": etiqueta_mes(r["fecha"]), "Aprobado": f"{r['per_capita_aprobado']:,.2f}"}
-            for e in esquemas:
-                v = ancho.loc[r["fecha"], e]
-                fila[e] = f"{v:,.2f}  ({r['per_capita_aprobado'] - v:+,.2f})"
-            filas.append(fila)
-        columnas = [{"name": c, "id": c} for c in ["Fecha", "Aprobado", *esquemas]]
-        return fig, filas, columnas
+    @app.callback(Output("c-2022", "figure"), Output("c-2025", "figure"), Input("c-unidad", "value"))
+    def comparacion(unidad):
+        return fig_comparacion(2022, unidad), fig_comparacion(2025, unidad)
 
 
 # ===================================================================== TAB 6
@@ -509,9 +599,12 @@ tab_metodologia = html.Div(className="card texto", children=[
         html.Li("El análisis cubre ene 2021 – mar 2026, aunque el BCRD ya publica datos hasta ago 2026."),
     ]),
     html.H4("Per cápita del PDSS"),
-    html.P("Régimen contributivo (CNSS/SISALRIL): RD$1,327.81 → 1,490.14 (2022) → 1,555.14 (feb 2023) → "
-           "1,683.22 (nov 2023) → 1,887.54 indexado (aprobado oct 2025). El CNSS usa el IPC general "
-           "para indexar (Res. 624-02 y anteriores); el IPC Salud queda solo como referencia."),
+    html.P("Régimen contributivo (CNSS/SISALRIL): RD$1,327.81 (oct 2021) → 1,490.14 (ago 2022, retroactivo) → "
+           "1,555.14 (feb 2023) → 1,683.22 (nov 2023) → 1,887.54 (nov 2025). La Res. CNSS 278-06 "
+           "(28 jul 2011) sustituyó el IPC Salud por el IPC General para indexar; en 2022 se usó, en la "
+           "práctica, la variabilidad promedio de ambos. Solo los aumentos de 2022 y 2025 son indexación "
+           "por precios; los demás agregaron coberturas o honorarios, así que la simulación compara "
+           "únicamente esos dos montos de indexación (RD$102.71 y RD$204.32)."),
 ])
 
 # ===================================================================== APP
