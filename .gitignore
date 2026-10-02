@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.pyc
+data/raw/*.pdf
+.DS_Store
+
+# notas de trabajo y configuración local (no son parte de la entrega)
+CLAUDE.md
+.claude/
