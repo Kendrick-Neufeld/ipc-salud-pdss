@@ -12,7 +12,7 @@ Los estilos (colores, tarjetas) están en app/assets/style.css.
 from pathlib import Path
 import pandas as pd
 import plotly.graph_objects as go
-from dash import Dash, dcc, html, Input, Output, State, dash_table
+from dash import Dash, dcc, html, Input, Output, State, ctx, dash_table
 
 PROC = Path(__file__).resolve().parents[1] / "data" / "processed"
 
@@ -34,6 +34,8 @@ INDEX_2022, INDEX_2025 = [
 
 NOMBRE = cat.set_index("codigo")["nombre"].to_dict()
 FECHA_FIN = comp["fecha"].max()
+FECHA_CORTE = "1 de octubre de 2026"  # cuándo se descargaron los datos del BCRD
+REPO = "https://github.com/Kendrick-Neufeld/ipc-salud-pdss"
 MES_ES = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"]
 
 
@@ -112,7 +114,7 @@ kpis = html.Div(className="kpis", children=[
     kpi("IPC Salud, acumulado", pct(ult["acum_salud"]),
         f"con seguro de salud: {pct(ult['acum_salud_ampliada'])}"),
     kpi("Servicios médicos, acumulado", pct(ult["acum_servicios_medicos"]),
-        "el componente que más subió"),
+        f"la clase de Salud que más subió (el seguro de salud, fuera del grupo, subió {pct(ult['acum_seguro_salud'])})"),
     kpi("Inflación interanual, mar 2026",
         f"{ult['interanual_salud']:.1f}% vs {ult['interanual_general']:.1f}%", "salud vs general"),
     kpi("Peso de Salud en la canasta", f"{peso_base_salud:.2f}%",
@@ -514,8 +516,8 @@ def hallazgos_percapita():
     return html.Ul(items)
 
 
-def fig_comparacion(anio: int, unidad: str):
-    d = sim[sim["anio"] == anio]
+def fig_comparacion(anio: int, unidad: str, datos=None):
+    d = sim[sim["anio"] == anio] if datos is None else datos
     col, fmt = ("variacion_pct", "{:.2f}%") if unidad == "pct" else ("monto_rd", "RD$ {:,.2f}")
     d = d.sort_values(col)
     fig = figura(alto=330, leyenda=False)
@@ -572,6 +574,146 @@ def registrar_callbacks_percapita(app):
         return fig_comparacion(2022, unidad), fig_comparacion(2025, unidad)
 
 
+# =============================================================== TAB 5b: simulador
+VIOLETA = "#4a3aa7"  # el índice PDSS hipotético (entidad nueva, color propio)
+COLOR_ESQUEMA["Índice PDSS (hipotético)"] = VIOLETA
+SUBGRUPOS = [("061", "Productos médicos", "medicamentos, anteojos"),
+             ("062", "Servicios para pacientes externos", "consultas, odontología, laboratorio, imágenes"),
+             ("063", "Servicios de hospital", "internamiento y cirugía")]
+_pesos = cat.set_index("codigo").loc[[c for c, _, _ in SUBGRUPOS], "ponderacion"]
+PESOS_IPC = (_pesos / _pesos.sum() * 100).to_dict()  # lo que pesa cada subgrupo dentro de Salud
+# cuánto vale cada subgrupo contra dic 2020 (dic 2020 = 100)
+_acum_sub = inf[inf["codigo"].isin(PESOS_IPC)].pivot(index="fecha", columns="codigo", values="var_acum_dic2020")
+REL_SUBGRUPOS = 100 + _acum_sub
+PESOS_EJEMPLO = {"ipc": [round(PESOS_IPC[c], 1) for c, _, _ in SUBGRUPOS], "servicios": [40, 40, 20]}
+
+
+def indice_pdss(pesos: dict) -> pd.Series:
+    """Índice PDSS = suma de (peso del subgrupo × índice del subgrupo ÷ índice en dic 2020) × 100.
+    Los pesos se normalizan: no importa que los deslizadores no sumen exactamente 100."""
+    total = sum(pesos.values())
+    return sum(pesos[c] / total * REL_SUBGRUPOS[c] for c in REL_SUBGRUPOS.columns)
+
+
+def filas_indexacion(pdss: pd.Series, ix: dict) -> pd.DataFrame:
+    """Lo aprobado, el IPC general y el IPC salud (ya calculados) + el índice PDSS hipotético."""
+    d = sim[(sim["anio"] == ix["anio"]) & sim["esquema"].isin(["Aprobado CNSS", "IPC general", "IPC salud"])]
+    ap = d[d["esquema"] == "Aprobado CNSS"].iloc[0]
+    var = (pdss[ix["hasta"]] / pdss[ix["desde"]] - 1) * 100
+    monto = ix["base"] * var / 100
+    fila = {"anio": ix["anio"], "esquema": "Índice PDSS (hipotético)", "variacion_pct": var,
+            "monto_rd": monto, "dif_pct": var - ap["variacion_pct"], "dif_rd": monto - ap["monto_rd"]}
+    return pd.concat([d, pd.DataFrame([fila])], ignore_index=True)
+
+
+def tabla_simulador(filas: pd.DataFrame):
+    datos = []
+    for r in filas.itertuples():
+        es_ap = r.esquema == "Aprobado CNSS"
+        datos.append({"Año": r.anio, "Índice": r.esquema, "Variación (%)": f"{r.variacion_pct:.2f}",
+                      "Monto (RD$)": rd(r.monto_rd),
+                      "Dif. vs aprobado (pp)": "—" if es_ap else f"{r.dif_pct:+.2f}",
+                      "Dif. vs aprobado (RD$)": "—" if es_ap else rd(r.dif_rd, True)})
+    return dash_table.DataTable(
+        data=datos, columns=[{"name": c, "id": c} for c in datos[0]],
+        style_header={"fontWeight": "600", "backgroundColor": "#f4f3f0"},
+        style_cell={"fontFamily": "inherit", "padding": "6px 10px", "textAlign": "right", "fontSize": 13},
+        style_cell_conditional=[{"if": {"column_id": "Índice"}, "textAlign": "left"}],
+        style_data_conditional=[
+            {"if": {"filter_query": '{Índice} = "Aprobado CNSS"'}, "fontWeight": "600", "backgroundColor": "#f4f3f0"},
+            {"if": {"filter_query": '{Índice} contains "PDSS"'}, "backgroundColor": "#f1eefb"}])
+
+
+def diferencia_texto(dif: float) -> str:
+    """Frase corta: cuánto se aleja el índice PDSS de otro índice (en puntos porcentuales)."""
+    if abs(dif) < 0.05:
+        return "el índice PDSS acumula lo mismo"
+    return f"el índice PDSS acumula {abs(dif):.1f} pp {'más' if dif > 0 else 'menos'}"
+
+
+def fila_deslizador(cod, nombre, detalle):
+    return html.Div(className="slider-fila", children=[
+        html.Div([html.Strong(f"{cod} · {nombre}"), html.Span(f"  ({detalle})", className="detalle")]),
+        dcc.Slider(id=f"s-w{cod}", min=0, max=100, step=0.1, value=round(PESOS_IPC[cod], 1),
+                   marks={0: "0", 50: "50", 100: "100"},
+                   tooltip={"placement": "bottom", "always_visible": True})])
+
+
+tab_simulador = html.Div([
+    html.P("Esta herramienta responde: ¿qué pasaría si el per cápita se indexara con un índice armado con el "
+           "peso que cada tipo de servicio tiene en el gasto del PDSS, y no con el que tiene en el bolsillo de "
+           "los hogares? Mueve los deslizadores y el índice se recalcula con los precios reales del BCRD "
+           "(los pesos se ajustan solos para sumar 100%).", className="nota"),
+    html.Div(className="aviso", children=[
+        html.Strong("Los pesos son hipotéticos. "),
+        "Los pesos reales saldrían de la siniestralidad por tipo de servicio que las ARS reportan a SISALRIL, "
+        "y esa información no es pública. Los valores iniciales son los pesos del IPC dentro de Salud."]),
+    tarjeta("Pesos de cada subgrupo de Salud", "Por defecto son los pesos del IPC. Prueba los ejemplos o ajusta cada uno.",
+            html.Div([
+                html.Div(className="botones", children=[
+                    html.Button("Pesos IPC", id="s-btn-ipc", n_clicks=0, className="boton"),
+                    html.Button("Más servicios (40/40/20)", id="s-btn-serv", n_clicks=0, className="boton")]),
+                *[fila_deslizador(c, n, d) for c, n, d in SUBGRUPOS],
+                html.P(id="s-pesos-txt", className="sub")])),
+    html.Div(id="s-kpis", className="kpis tres"),
+    tarjeta("Índice PDSS hipotético vs IPC general e IPC salud",
+            "Los tres índices reescalados a 100 en dic 2020. Índice PDSS = suma de (peso × índice del subgrupo ÷ índice del subgrupo en dic 2020).",
+            grafico("s-linea")),
+    html.Div(className="controls one", children=[html.Div([
+        html.Label("Mostrar las indexaciones en"),
+        dcc.RadioItems(id="s-unidad", value="pct", className="check", inline=True,
+                       options=[{"label": " Porcentaje (%)", "value": "pct"},
+                                {"label": " Pesos (RD$)", "value": "rd"}])])]),
+    html.Div(className="grid-2", children=[
+        tarjeta(titulo_periodo(INDEX_2022), "¿Qué habría dado este índice en el mismo período, junto a lo aprobado?",
+                grafico("s-2022")),
+        tarjeta(titulo_periodo(INDEX_2025), "¿Qué habría dado este índice en el mismo período, junto a lo aprobado?",
+                grafico("s-2025")),
+    ]),
+    tarjeta("Detalle de las dos indexaciones", "Diferencia = índice menos aprobado. Negativo: habría dado menos que lo aprobado.",
+            html.Div(id="s-tabla")),
+])
+
+
+def registrar_callbacks_simulador(app):
+    @app.callback(Output("s-w061", "value"), Output("s-w062", "value"), Output("s-w063", "value"),
+                  Input("s-btn-ipc", "n_clicks"), Input("s-btn-serv", "n_clicks"), prevent_initial_call=True)
+    def ejemplos(_ipc, _serv):
+        clave = "ipc" if ctx.triggered_id == "s-btn-ipc" else "servicios"
+        return PESOS_EJEMPLO[clave]
+
+    @app.callback(Output("s-pesos-txt", "children"), Output("s-kpis", "children"), Output("s-linea", "figure"),
+                  Output("s-2022", "figure"), Output("s-2025", "figure"), Output("s-tabla", "children"),
+                  Input("s-w061", "value"), Input("s-w062", "value"), Input("s-w063", "value"),
+                  Input("s-unidad", "value"))
+    def simular(w61, w62, w63, unidad):
+        pesos = {"061": w61 or 0, "062": w62 or 0, "063": w63 or 0}
+        total = sum(pesos.values())
+        if total <= 0:
+            vacia = figura()
+            return ("Los tres pesos están en 0: sube al menos uno.", [], vacia, vacia, vacia,
+                    html.P("Sin datos: los tres pesos están en 0."))
+        pdss = indice_pdss(pesos)
+        usados = " · ".join(f"{n}: {pesos[c] / total * 100:.1f}%" for c, n, _ in SUBGRUPOS)
+        texto = f"Pesos usados (normalizados a 100%): {usados}."
+
+        acum = pdss[FECHA_FIN] - 100
+        kpis = [kpi("Índice PDSS hipotético, acumulado", pct(acum), "dic 2020 → mar 2026"),
+                kpi("IPC Salud, acumulado", pct(ult["acum_salud"]),
+                    diferencia_texto(acum - ult["acum_salud"])),
+                kpi("IPC general, acumulado", pct(ult["acum_general"]),
+                    diferencia_texto(acum - ult["acum_general"]))]
+
+        fig = figura(titulo_y="Índice (dic 2020 = 100)")
+        linea(fig, comp["fecha"], 100 + comp["acum_general"], "IPC general", GRIS)
+        linea(fig, comp["fecha"], 100 + comp["acum_salud"], "IPC Salud", AZUL)
+        linea(fig, pdss.index, pdss, "Índice PDSS (hipotético)", VIOLETA, ancho=3.5)
+
+        f22, f25 = filas_indexacion(pdss, INDEX_2022), filas_indexacion(pdss, INDEX_2025)
+        return (texto, kpis, fig, fig_comparacion(2022, unidad, f22), fig_comparacion(2025, unidad, f25),
+                tabla_simulador(pd.concat([f22, f25], ignore_index=True)))
+
+
 # ===================================================================== TAB 6
 tab_metodologia = html.Div(className="card texto", children=[
     html.H3("Metodología y fuentes"),
@@ -590,6 +732,12 @@ tab_metodologia = html.Div(className="card texto", children=[
         html.Li("Salud + seguro de salud: el seguro de salud (artículo 1253101, peso 0.35%) está en el grupo "
                 "12 (Bienes y Servicios Diversos), no en Salud; aquí se agrega para ver el costo de la salud completo."),
     ]),
+    html.H4("Simulador del índice PDSS"),
+    html.P("Índice PDSS hipotético = suma, sobre los tres subgrupos de Salud (061 productos médicos, 062 servicios "
+           "para pacientes externos, 063 servicios de hospital), de: peso × índice del subgrupo en el mes ÷ índice "
+           "del subgrupo en dic 2020 × 100. Los pesos se normalizan para sumar 100%. Con los pesos del IPC "
+           "(69.9 / 19.3 / 10.8) el resultado es casi igual al IPC Salud. Los pesos reales dependen de la "
+           "siniestralidad por tipo de servicio que las ARS reportan a SISALRIL, que no es pública."),
     html.H4("Limitaciones"),
     html.Ul([
         html.Li("Los artículos se publican solo desde oct 2020: la inflación interanual por artículo, "
@@ -607,6 +755,28 @@ tab_metodologia = html.Div(className="card texto", children=[
            "únicamente esos dos montos de indexación (RD$102.71 y RD$204.32)."),
 ])
 
+def enlace(texto, url):
+    return html.A(texto, href=url, target="_blank", rel="noopener")
+
+
+def pie():
+    """Pie de página con la fecha de corte y las fuentes de los datos."""
+    return html.Footer(className="pie", children=[
+        html.P([html.Strong("Datos: "), "Índice de Precios al Consumidor, base oct 2019 – sep 2020 = 100, Banco Central de la "
+                "República Dominicana (", enlace("bancentral.gov.do", "https://www.bancentral.gov.do"), "), descargado el ",
+                FECHA_CORTE, ". El BCRD publica hasta ago 2026; el análisis se recorta a mar 2026."]),
+        html.P([html.Strong("Per cápita: "), "Res. CNSS 533-01 (oct 2021); ",
+                enlace("Res. 553", "https://www.arsuniversal.com.do/media/qtza3chw/resoluciones-sesion-no-553.pdf"), " (ago 2022); ",
+                enlace("Res. 563-01", "https://hahnceara.do/wp-content/uploads/Resolucion-No.-557-01-Incrementos-SFS-Regimen-Contributivo-y-ARS-CNSS.pdf"),
+                " (feb 2023); ",
+                enlace("Res. 581-03", "https://www.diariolibre.com/actualidad/salud/2023/12/14/cnss-aumenta-a-rd12-mil-la-cobertura-de-medicamentos/2551794"),
+                " (nov 2023); Res. 624-02 (nov 2025: ",
+                enlace("El Nuevo Diario", "https://elnuevodiario.com.do/cnss-aumenta-per-capita-del-seguro-familiar-de-salud-a-rd1887-54/"), ", ",
+                enlace("Mapfre Salud", "https://mapfresaludars.com.do/conoce-la-resolucion-cnss-624-02/"), ")."]),
+        html.P([html.Strong("Código y datos: "), enlace(REPO.replace("https://", ""), REPO)]),
+    ])
+
+
 # ===================================================================== APP
 app = Dash(__name__, title="IPC Salud y per cápita PDSS", suppress_callback_exceptions=True)
 server = app.server
@@ -616,21 +786,27 @@ TABS = [("resumen", "Resumen", tab_resumen),
         ("peso", "Peso e incidencia", tab_peso),
         ("subyacencia", "Subyacencia", tab_subyacencia),
         ("percapita", "Per cápita PDSS", tab_percapita),
+        ("simulador", "Simulador índice PDSS", tab_simulador),
         ("metodologia", "Metodología", tab_metodologia)]
 
 app.layout = html.Div(className="page", children=[
     html.Header(children=[
         html.H1("IPC de Salud y per cápita del PDSS"),
         html.P("Evolución del rubro salud en el IPC del BCRD, enero 2021 – marzo 2026, "
-               "e implicaciones para indexar el per cápita base (régimen contributivo, SFS).")]),
+               "e implicaciones para indexar el per cápita base (régimen contributivo, SFS)."),
+        html.P(["Datos del BCRD descargados el ", FECHA_CORTE, " · ",
+                html.A("Código en GitHub", href=REPO, target="_blank", rel="noopener")],
+               className="corte")]),
     dcc.Tabs(id="tabs", value="resumen", className="tabs",
              children=[dcc.Tab(label=l, value=v, className="tab", selected_className="tab--sel",
                                children=html.Div(c, className="tab-body")) for v, l, c in TABS]),
+    pie(),
 ])
 
 registrar_callbacks_jerarquia(app)
 registrar_callbacks_peso(app)
 registrar_callbacks_percapita(app)
+registrar_callbacks_simulador(app)
 
 if __name__ == "__main__":
     app.run(debug=False, port=8050)

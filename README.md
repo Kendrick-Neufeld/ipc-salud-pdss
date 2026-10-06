@@ -10,6 +10,7 @@ Trabajo de investigación para la posición de Analista Científico de Datos en 
 | --- | --- |
 | Limpieza de los archivos del BCRD → tablas en parquet | `src/01_limpieza.py` |
 | Cálculos (inflación, brechas, incidencias, pesos, subyacencia, simulación del per cápita) | `src/02_calculos.py` |
+| Control de consistencia: las cifras del ensayo salen de los datos | `src/03_verificacion.py` |
 | Dashboard web (Python Dash + Plotly) | `app/app.py` |
 | Datos originales del BCRD | `data/raw/` |
 | Datos procesados (parquet) | `data/processed/` |
@@ -25,6 +26,7 @@ pip install -r requirements.txt
 
 python src/01_limpieza.py     # data/raw  → 6 tablas en data/processed
 python src/02_calculos.py     # data/processed → 8 tablas de resultados
+python src/03_verificacion.py # revisa que las cifras del ensayo coincidan con los datos
 python app/app.py             # dashboard en http://127.0.0.1:8050
 ```
 
@@ -32,7 +34,22 @@ Los parquet ya vienen incluidos en el repositorio, así que el dashboard se pued
 
 ## Dashboard
 
-Seis pestañas: **Resumen**, **Jerarquía de la canasta** (grupo, subgrupo, clase, subclase y artículo), **Peso e incidencia**, **Subyacencia**, **Per cápita PDSS** y **Metodología**.
+Siete pestañas: **Resumen**, **Jerarquía de la canasta** (grupo, subgrupo, clase, subclase y artículo), **Peso e incidencia**, **Subyacencia**, **Per cápita PDSS**, **Simulador índice PDSS** y **Metodología**.
+
+El **simulador** arma un índice de precios hipotético para el PDSS: se ajusta con deslizadores el peso de cada subgrupo de Salud (productos médicos, servicios para pacientes externos y hospital) y se ve qué habría dado en las dos indexaciones del per cápita (2022 y 2025) frente a lo aprobado. Los pesos son hipotéticos: los reales saldrían de la siniestralidad por tipo de servicio que las ARS reportan a SISALRIL, que no es pública.
+
+## Publicar en Render
+
+El dashboard está listo para publicarse como servicio web en [Render](https://render.com):
+
+| Campo | Valor |
+| --- | --- |
+| Tipo | Web Service (conectar este repositorio de GitHub) |
+| Build Command | `pip install -r requirements.txt` |
+| Start Command | `gunicorn --chdir app app:server` |
+| Python | 3.12 (lo fija el archivo `.python-version`) |
+
+El dashboard lee los parquet de `data/processed/`, que ya están en el repositorio. En el plan gratuito el servicio se duerme tras 15 minutos sin uso y tarda cerca de 1 minuto en despertar.
 
 ## Datos
 

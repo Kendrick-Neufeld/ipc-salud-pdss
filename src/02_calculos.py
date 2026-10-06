@@ -53,7 +53,7 @@ PERCAPITA_HISTORIA = [
     ("2023-02-01", "feb 2023", 1555.14, 0.00, 65.00, "Coberturas y honorarios",
      "Res. CNSS 563-01 (26 ene 2023)", "Honorarios, exámenes, habitación (no es indexación general)"),
     ("2023-11-01", "nov 2023", 1683.22, 0.00, 128.08, "Cobertura nueva",
-     "Res. CNSS 2023", "Cobertura de medicamentos ambulatorios"),
+     "Res. CNSS 581-03 (14 dic 2023, retroactivo a nov 2023)", "Cobertura de medicamentos ambulatorios"),
     ("2025-11-01", "nov 2025", 1887.54, 204.32, 0.00, "Indexación",
      "Res. CNSS 624-02 (31 oct 2025)", "Indexación abr 2023–mar 2025; honorarios por aparte (+44.71)"),
 ]
