@@ -49,7 +49,7 @@ def opciones_meses(desde=None):
 
 
 # ------------------------------------------------------------------- colores
-# Paleta validada (ver CLAUDE.md / skill dataviz): el protagonista es Salud (azul);
+# Paleta de colores: el protagonista es Salud (azul);
 # lo demás es contexto (gris) o la segunda variante (naranja).
 TINTA, TINTA_2 = "#0b0b0b", "#52514e"
 GRIS, GRIS_CLARO, REJILLA = "#8a8985", "#c9c8c3", "#ecebe8"

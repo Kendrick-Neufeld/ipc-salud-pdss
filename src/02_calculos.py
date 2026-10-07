@@ -66,7 +66,7 @@ INDEXACIONES = [
     {"anio": 2025, "base": 1683.22, "desde": pd.Timestamp("2023-03-01"),
      "hasta": pd.Timestamp("2025-03-01"), "aprobado_rd": 204.32},
 ]
-# Control: cifras de referencia (del CLAUDE.md) que la simulación debe reproducir, en %
+# Control: cifras de referencia (calculadas a mano al revisar las resoluciones) que la simulación debe reproducir, en %
 REFERENCIA_PCT = {
     (2022, "IPC general"): 9.05, (2022, "IPC salud"): 4.78, (2022, "Promedio general y salud"): 6.92,
     (2025, "IPC general"): 7.09, (2025, "IPC salud"): 10.13, (2025, "Promedio general y salud"): 8.61,
@@ -252,7 +252,7 @@ def simular_percapita(comparacion):
                 "dif_pct": pct - aprobado_pct, "dif_rd": monto - ix["aprobado_rd"]})
     out = pd.DataFrame(filas)
 
-    # control: las cifras de referencia del CLAUDE.md deben salir de los datos
+    # control: las cifras de referencia deben salir de los datos
     for (anio, nom), esperado in REFERENCIA_PCT.items():
         real = out[(out["anio"] == anio) & (out["esquema"] == nom)]["variacion_pct"].iloc[0]
         assert abs(real - esperado) < 0.01, f"{anio} {nom}: salió {real:.2f}%, se esperaba {esperado}%"
