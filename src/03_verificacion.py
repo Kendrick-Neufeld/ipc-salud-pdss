@@ -74,8 +74,8 @@ resultados.append(("Simulador con pesos IPC ≈ IPC salud (dif. en pp de acumula
 print(f"{'':2}{'Control':72} {'Calculado':>12} {'Esperado':>10}")
 for nombre, calc, esp, ok in resultados:
     print(f"{'ok' if ok else 'XX':2}{nombre:72} {str(calc):>12} {str(esp):>10}")
-print("\nAviso: el ensayo cita 69.9 / 19.4 / 10.8 como pesos de los subgrupos de Salud. A un decimal el dato exacto es\n"
-      "69.9 / 19.3 / 10.8 (los 19.4 vienen de redondear 19.35 hacia arriba y hacen que sumen 100.1).")
+print("\nNota: los pesos exactos de los subgrupos de Salud son 69.87 / 19.35 / 10.78. A un decimal quedan\n"
+      "69.9 / 19.3 / 10.8 (suman 100.0), que son los que usan el ensayo y el simulador.")
 fallos = [r for r in resultados if not r[3]]
 print(f"\n{len(resultados) - len(fallos)} de {len(resultados)} controles pasan.")
 if fallos:

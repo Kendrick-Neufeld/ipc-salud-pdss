@@ -4,6 +4,8 @@ Análisis del rubro de salud en el Índice de Precios al Consumidor (IPC) del Ba
 
 Trabajo de investigación para la posición de Analista Científico de Datos en Inteligencia PDSS (ARS Humano).
 
+**Dashboard publicado:** https://ipc-salud-pdss.onrender.com/ (en el plan gratuito de Render se duerme tras 15 minutos sin uso; la primera carga puede tardar cerca de 1 minuto).
+
 ## Qué incluye
 
 | Pieza | Dónde |
@@ -40,7 +42,7 @@ El **simulador** arma un índice de precios hipotético para el PDSS: se ajusta 
 
 ## Publicar en Render
 
-El dashboard está listo para publicarse como servicio web en [Render](https://render.com):
+El dashboard está publicado como servicio web en [Render](https://render.com) (https://ipc-salud-pdss.onrender.com/) con esta configuración, y se vuelve a publicar solo con cada push a `main`:
 
 | Campo | Valor |
 | --- | --- |
